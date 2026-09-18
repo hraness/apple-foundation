@@ -37,7 +37,7 @@ availability (`modelNotReady`, `appleIntelligenceNotEnabled`,
 Rust hosts depend on the crate by immutable tag:
 
 ```toml
-apple-foundation = { git = "https://github.com/hraness/apple-foundation", tag = "v0.1.1" }
+apple-foundation = { git = "https://github.com/hraness/apple-foundation", tag = "v0.1.2" }
 ```
 
 and resolve the bridge binary their own way (installed path, env var, or

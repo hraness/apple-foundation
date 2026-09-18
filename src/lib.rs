@@ -252,18 +252,27 @@ impl Bridge {
     /// that serialization is the queue. Beyond `max_pending` queued
     /// callers, returns [`Error::QueueFull`].
     pub fn request(&self, request: &Request) -> Result<Value> {
+        self.request_with_timeout(request, self.options.request_timeout)
+    }
+
+    /// Execute one request with a per-call deadline override (for hosts
+    /// whose effect budget varies per request).
+    pub fn request_with_timeout(&self, request: &Request, timeout: Duration) -> Result<Value> {
         request.validate()?;
+        if timeout.is_zero() {
+            return Err(Error::Timeout);
+        }
         let waiters = self.waiters.fetch_add(1, Ordering::SeqCst);
         if waiters >= self.options.max_pending {
             self.waiters.fetch_sub(1, Ordering::SeqCst);
             return Err(Error::QueueFull);
         }
-        let result = self.request_inner(request);
+        let result = self.request_inner(request, timeout);
         self.waiters.fetch_sub(1, Ordering::SeqCst);
         result
     }
 
-    fn request_inner(&self, request: &Request) -> Result<Value> {
+    fn request_inner(&self, request: &Request, timeout: Duration) -> Result<Value> {
         let mut guard = self.conn.lock().unwrap();
         let mut attempts = 0u8;
         loop {
@@ -305,7 +314,7 @@ impl Bridge {
                 kill_conn(guard.take());
                 continue;
             }
-            match rx.recv_timeout(self.options.request_timeout) {
+            match rx.recv_timeout(timeout) {
                 Ok(resp) => return finish(id, resp),
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     kill_conn(guard.take());

@@ -449,13 +449,22 @@ pub fn schema_check(argv: &[String], schema: &Value) -> Result<()> {
     Err(Error::Bridge(code.to_string()))
 }
 
-/// Compile the bridge to `install` if missing, returning its path. Requires
-/// macOS with Xcode 26+ (`xcrun swiftc`). Builds write to a unique temp file
-/// and atomically rename, so concurrent first-builds race harmlessly to an
-/// identical binary.
+/// Stamp written next to a built bridge recording which source it came from.
+/// A version bump or source edit invalidates older installs.
+fn source_stamp() -> String {
+    format!("{}:{}", env!("CARGO_PKG_VERSION"), SWIFT_SOURCE.len())
+}
+
+/// Compile the bridge to `install` if missing or built from different source,
+/// returning its path. Requires macOS with Xcode 26+ (`xcrun swiftc`). Builds
+/// write to a unique temp file and atomically rename, so concurrent
+/// first-builds race harmlessly to an identical binary.
 pub fn ensure_bridge(install: &Path) -> Result<PathBuf> {
     platform_check()?;
-    if install.is_file() {
+    let stamp_path = install.with_extension("stamp");
+    let fresh = install.is_file()
+        && std::fs::read_to_string(&stamp_path).is_ok_and(|s| s == source_stamp());
+    if fresh {
         return Ok(install.to_path_buf());
     }
     let dir = install
@@ -484,5 +493,6 @@ pub fn ensure_bridge(install: &Path) -> Result<PathBuf> {
         return Err(Error::Unsupported("swiftc failed to build bridge".into()));
     }
     std::fs::rename(&tmp_out, install).map_err(Error::Io)?;
+    let _ = std::fs::write(&stamp_path, source_stamp());
     Ok(install.to_path_buf())
 }

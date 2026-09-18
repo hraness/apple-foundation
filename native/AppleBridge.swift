@@ -150,35 +150,18 @@ func execute(_ raw: Data) async {
 /// Persistent serve mode: one JSON request per stdin line, one response per
 /// stdout line, in order. Requests are independent — a fresh session is
 /// created per line while the model stays loaded in this process.
+/// `bytes.lines` yields each line as it arrives; `read(upToCount:)` would
+/// stall waiting to fill its buffer or for EOF.
 @available(macOS 26.0, *)
 func serve() async throws {
-    var buffer = Data()
-    var skipping = false
-    while let chunk = try FileHandle.standardInput.read(upToCount: 8192) {
-        if chunk.isEmpty { break }
-        buffer.append(chunk)
-        while let newline = buffer.firstIndex(of: 10) {
-            let line = Data(buffer.prefix(upTo: newline))
-            buffer.removeSubrange(...newline)
-            if skipping {
-                skipping = false
-                continue
-            }
-            if line.isEmpty { continue }
-            if line.count > maxLineBytes {
-                try? emit(["id": NSNull(), "ok": false, "error": ["code": "inputBudgetExceeded"]])
-                continue
-            }
-            await execute(line)
+    for try await line in FileHandle.standardInput.bytes.lines {
+        let raw = Data(line.utf8)
+        if raw.isEmpty { continue }
+        if raw.count > maxLineBytes {
+            try? emit(["id": requestId(raw), "ok": false, "error": ["code": "inputBudgetExceeded"]])
+            continue
         }
-        if buffer.count > maxLineBytes {
-            try? emit(["id": NSNull(), "ok": false, "error": ["code": "inputBudgetExceeded"]])
-            buffer.removeAll(keepingCapacity: true)
-            skipping = true
-        }
-    }
-    if !buffer.isEmpty && !skipping && buffer.count <= maxLineBytes {
-        await execute(buffer)
+        await execute(raw)
     }
 }
 

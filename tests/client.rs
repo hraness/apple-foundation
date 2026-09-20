@@ -1,3 +1,6 @@
+// The production client intentionally rejects non-macOS platforms before I/O.
+#![cfg(target_os = "macos")]
+
 use apple_foundation::{check, schema_check, Bridge, Error, Options, Request};
 use serde_json::json;
 use std::path::PathBuf;
@@ -146,4 +149,162 @@ fn invalid_argv_and_request_bounds() {
 #[test]
 fn swift_source_is_embedded() {
     assert!(apple_foundation::SWIFT_SOURCE.contains("FoundationModels"));
+}
+
+struct FixtureDirectory(PathBuf);
+
+impl FixtureDirectory {
+    fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "apple-foundation-strict-{}-{id}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&path).unwrap();
+        Self(path)
+    }
+    fn events(&self) -> Vec<String> {
+        std::fs::read_to_string(self.0.join("events"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+    fn argv(&self, extra: &[&str]) -> Vec<String> {
+        let mut arguments = argv(&["--audit"]);
+        arguments.push(self.0.join("events").to_string_lossy().into_owned());
+        arguments.extend(extra.iter().map(|value| (*value).to_owned()));
+        arguments
+    }
+}
+
+impl Drop for FixtureDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn no_retry_preserves_response_loss_after_one_admission() {
+    let fixture = FixtureDirectory::new();
+    let bridge = Bridge::new(&fixture.argv(&["--drop-response"])).unwrap();
+    let error = bridge.request_no_retry(&Request::text("admit then exit"));
+    assert!(
+        matches!(error, Err(Error::Protocol(ref message)) if message == "bridge disconnected while awaiting response")
+    );
+    assert_eq!(fixture.events(), ["spawn", "admit"]);
+}
+
+#[test]
+fn no_retry_preserves_partial_write_error_without_reconnect() {
+    let fixture = FixtureDirectory::new();
+    let bridge = Bridge::new(&fixture.argv(&["--exit-after-prefix"])).unwrap();
+    // Larger than the macOS socket buffer: the fixture takes one byte, records
+    // that possible admission boundary, then exits while the client writes.
+    let request = Request::guided("partial write", json!({"description":"x".repeat(262_144)}));
+    let error = bridge.request_no_retry(&request);
+    assert!(matches!(error, Err(Error::Io(_))), "{error:?}");
+    assert_eq!(fixture.events(), ["spawn", "prefix"]);
+}
+
+#[test]
+fn no_retry_does_not_mask_response_loss_with_a_later_spawn_failure() {
+    let fixture = FixtureDirectory::new();
+    let executable = fixture.0.join("owned-bridge");
+    std::fs::copy(fake_bridge(), &executable).unwrap();
+    let mut arguments = fixture.argv(&["--unlink-self-after-admit"]);
+    arguments[0] = executable.to_string_lossy().into_owned();
+    let bridge = Bridge::new(&arguments).unwrap();
+    let error = bridge.request_no_retry(&Request::text("admit then retire executable"));
+    assert!(matches!(error, Err(Error::Protocol(_))), "{error:?}");
+    assert!(!executable.exists());
+    assert_eq!(fixture.events(), ["spawn", "admit"]);
+}
+
+#[test]
+fn no_retry_reuses_warm_connection_and_preserves_bridge_rejection() {
+    let fixture = FixtureDirectory::new();
+    let bridge = Bridge::new(&fixture.argv(&[])).unwrap();
+    assert_eq!(
+        bridge.request_no_retry(&Request::text("first")).unwrap(),
+        json!({"echo":"first"})
+    );
+    assert!(
+        matches!(bridge.request_no_retry(&Request::text("fail")), Err(Error::Bridge(code)) if code == "generationFailed")
+    );
+    assert_eq!(
+        bridge
+            .request_no_retry_with_timeout(&Request::text("last"), Duration::from_secs(1))
+            .unwrap(),
+        json!({"echo":"last"})
+    );
+    assert_eq!(fixture.events(), ["spawn", "admit", "admit", "admit"]);
+}
+
+#[test]
+fn no_retry_rejects_invalid_requests_before_spawning() {
+    let fixture = FixtureDirectory::new();
+    let bridge = Bridge::new(&fixture.argv(&[])).unwrap();
+    assert!(matches!(
+        bridge.request_no_retry(&Request::text("")),
+        Err(Error::Protocol(_))
+    ));
+    assert!(matches!(
+        bridge.request_no_retry_with_timeout(&Request::text("valid"), Duration::ZERO),
+        Err(Error::Timeout)
+    ));
+    assert!(fixture.events().is_empty());
+}
+
+#[test]
+fn legacy_requests_keep_the_existing_reconnect_policy() {
+    let fixture = FixtureDirectory::new();
+    let bridge = Bridge::new(&fixture.argv(&["--drop-response"])).unwrap();
+    assert!(matches!(
+        bridge.request(&Request::text("legacy")),
+        Err(Error::Protocol(_))
+    ));
+    assert_eq!(fixture.events(), ["spawn", "admit", "spawn", "admit"]);
+}
+
+#[test]
+fn no_retry_bounds_stalled_stdin_and_never_resubmits() {
+    let fixture = FixtureDirectory::new();
+    let bridge = Bridge::new(&fixture.argv(&["--stall-after-prefix"])).unwrap();
+    let request = Request::guided("stalled write", json!({"description":"x".repeat(900_000)}));
+    let start = std::time::Instant::now();
+    assert!(matches!(
+        bridge.request_no_retry_with_timeout(&request, Duration::from_millis(200)),
+        Err(Error::Timeout)
+    ));
+    assert!(start.elapsed() < Duration::from_secs(3));
+    assert_eq!(fixture.events(), ["spawn", "prefix"]);
+}
+
+#[test]
+fn oversized_response_without_newline_is_bounded_and_not_retried() {
+    let fixture = FixtureDirectory::new();
+    let bridge = Bridge::new(&fixture.argv(&["--oversize-response"])).unwrap();
+    let start = std::time::Instant::now();
+    let result = bridge.request_no_retry_with_timeout(
+        &Request::text("oversized response"),
+        Duration::from_secs(5),
+    );
+    assert!(matches!(result, Err(Error::Protocol(_))), "{result:?}");
+    assert!(start.elapsed() < Duration::from_secs(3));
+    assert_eq!(fixture.events(), ["spawn", "admit"]);
+}
+
+#[test]
+fn oversized_schema_is_rejected_before_any_request_bytes() {
+    let fixture = FixtureDirectory::new();
+    let bridge = Bridge::new(&fixture.argv(&[])).unwrap();
+    let request = Request::guided("too large", json!({"description":"x".repeat(1_048_576)}));
+    assert!(
+        matches!(bridge.request_no_retry(&request), Err(Error::Protocol(message)) if message.contains("request exceeds 1048576 bytes"))
+    );
+    // The lazy process may have been spawned, but no request was admitted.
+    drop(bridge);
+    assert!(!fixture.events().iter().any(|event| event == "admit"));
 }

@@ -1,36 +1,39 @@
 # apple-foundation
 
-Product-neutral access to Apple's on-device Foundation Models framework for
-Rust (and other) hosts. Free, private, local inference on macOS 26+ Apple
-Silicon — no API key, no network egress, no fallback to a cloud provider.
+Use Apple's on-device Foundation Models from Rust, or from any language that can
+start a process and exchange JSON lines with it. The model runs locally on Apple
+Silicon Macs with macOS 26 or later, costs nothing per call, and needs no API
+key. The bridge makes no network calls and never falls back to a cloud
+provider.
 
-Two pieces:
+The project has two parts:
 
-- `native/AppleBridge.swift` — a small executable that wraps
-  `LanguageModelSession`. Speaks a bounded NDJSON protocol (one request line
-  in, one response line out, in order) so a single warm process serializes
-  generation naturally. Guided output uses `DynamicGenerationSchema`
-  translated from a JSON-schema subset, so structured responses are
-  schema-constrained rather than prompt-policed. Modes: `--check`
-  (availability), `--schema-check`, `--once`, and persistent serve mode.
-- `src/lib.rs` — the `apple-foundation` Rust client: lazy spawn, one
-  in-flight request with a bounded pending queue (`QueueFull` backpressure),
-  per-request timeout, kill-and-respawn on failure, `ensure_bridge()` to
-  compile the embedded Swift source when no binary is installed.
+- `native/AppleBridge.swift` is a small executable around
+  `LanguageModelSession`. It reads one JSON request per line and writes one
+  JSON response per line, in order, so one long-running process handles one
+  generation at a time. Guided output translates a subset of JSON Schema into
+  `DynamicGenerationSchema`, so the schema constrains the model while it
+  generates. Modes: `--check` (availability), `--schema-check`, `--once`, and
+  a persistent serve mode.
+- `src/lib.rs` is the `apple-foundation` Rust client. It starts the bridge on
+  first use, runs one request at a time with a size-limited queue (a full queue
+  returns `QueueFull`), applies a per-request timeout, restarts the bridge
+  after a failure, and can compile the embedded Swift source with
+  `ensure_bridge()` when no binary is installed.
 
 Wire contract: [`spec/protocol.md`](spec/protocol.md).
 
 ## Build
 
 ```sh
-sh scripts/build-bridge.sh            # → target/debug/apple-bridge
+sh scripts/build-bridge.sh            # builds target/debug/apple-bridge
 target/debug/apple-bridge --check     # {"available":true,...} on macOS 26+
 cargo test                            # protocol + client tests (fake bridge)
 ```
 
-Compilation alone is not evidence the model works — run `--check` for live
-availability (`modelNotReady`, `appleIntelligenceNotEnabled`,
-`deviceNotEligible` are real states).
+A successful build does not mean the model is available. Run `--check` to see
+live availability; it can report `modelNotReady`, `appleIntelligenceNotEnabled`,
+or `deviceNotEligible` on real machines.
 
 ## Consumers
 
@@ -41,8 +44,16 @@ apple-foundation = { git = "https://github.com/hraness/apple-foundation", tag = 
 ```
 
 and resolve the bridge binary their own way (installed path, env var, or
-`ensure_bridge`). Other languages can drive the executable's line protocol
-directly; keep the protocol version-free and additive-only.
+`ensure_bridge`):
+
+```rust
+use apple_foundation::{Bridge, Request};
+
+let bridge = Bridge::new(&["/usr/local/bin/apple-bridge".to_string()])?;
+let reply = bridge.request(&Request::text("Summarize this note in one sentence."))?;
+```
+
+Other languages can drive the executable's line protocol directly.
 
 ## Requests that must not be replayed automatically
 
@@ -54,26 +65,30 @@ return the error without reconnecting or resending. Successful calls keep the
 warm connection. A subsequent explicit API call is a new submission; the client
 does not deduplicate requests or reconcile uncertain outcomes.
 
-`request` and `request_with_timeout` retain their existing reconnect behavior:
-a write error or lost response may resend a request. They do not provide
-at-most-once submission.
+`request` and `request_with_timeout` reconnect after a write error or lost
+response, so they can send a request twice. They do not provide at-most-once
+submission.
 
 `Options::max_pending = 1` rejects concurrent calls with `QueueFull` instead of
 queuing behind an in-flight request. No-retry calls use one I/O deadline for
 stdin writes and response waiting. Queue waiting and process spawn remain
-outside that deadline. Legacy calls retain their response-only timeout.
+outside that deadline. `request` and `request_with_timeout` apply their timeout
+to the response wait only.
 The no-retry API does not claim a total wall-clock deadline or prove that a
 request with an uncertain result did not execute. Hosts must retain uncertainty
 and must not automatically call again after such an error.
 
-Request serialization is bounded to the bridge's existing 1 MiB line limit
-(excluding the newline), including schemas; oversized requests now fail locally
-before any request bytes are written. Response readers stop after at most
-4 MiB + 1 bytes without waiting for a newline. This prevents an unbounded line
-from allocating unbounded client memory. Wire fields and Swift source are
-unchanged; Unix stdin uses a socket so strict delivery can time out safely.
+A serialized request, including its schema, may be at most 1 MiB, the bridge's
+line limit (excluding the newline). A larger request fails locally before any
+bytes are written. Response readers stop after at most 4 MiB + 1 bytes without
+waiting for a newline, so a runaway line cannot use unbounded client memory. On
+Unix the bridge's stdin is a socket, so a no-retry write can time out safely.
 
 CI runs formatting, Clippy, build, and tests with Rust 1.85.0 on macOS 14 and
 Ubuntu 24.04. Fake-bridge protocol tests run on macOS without a model. Linux
 checks compilation and the unsupported-platform guards; it does not claim
 Foundation Models availability.
+
+## License
+
+MIT or Apache-2.0, at your option.

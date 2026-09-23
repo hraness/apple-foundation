@@ -27,12 +27,21 @@
   downgrade to free text. Hosts decide whether to retry unguided.
 - Serve mode creates a fresh `LanguageModelSession` per request — no
   transcript accumulates between requests.
+- Other languages drive the bridge's line protocol directly. Keep it
+  version-free and additive-only.
 - Consumers pin this crate by immutable tag through a Cargo git dependency.
   Bump `Cargo.toml` version and tag `v*` for releases; keep tags immutable.
 - Native checks: `cargo build`, `cargo test`,
   `cargo clippy --all-targets -- -D warnings`, `cargo fmt -- --check`, plus
   `sh scripts/build-bridge.sh` and a `--check` run on Apple Silicon.
   Compilation alone is not evidence inference works.
+
+<!-- hraness-public-copy:start -->
+- Public copy (websites, READMEs, docs, package and GitHub descriptions, CLI help, `llms.txt`, generated pages) follows `STYLE.md`, synced from hraness/.github. Text a model writes for publication also follows `GENERATION_STYLE.md`.
+- The delivery vocabulary in this file (admission, qualification, custody, receipt, bounded, lane, gate, surface, projection) is internal. Translate it into what the reader gets.
+- Take one-line product and sibling descriptions from the portfolio registry and versions from the release record. Tests pin facts, not prose.
+- Run `bun run check:copy` before handoff when the repository has it.
+<!-- hraness-public-copy:end -->
 
 <!-- oompa-local-efficiency:start -->
 - Treat the user's request to change this repository as standing authorization for routine task-owned commits, pushes, pull requests, merges, releases, deployments, and production verification after the gates applicable to that action pass. Do not ask for duplicate confirmation. Build confidence through relevant automated checks, bounded diagnostics, and independent review, not another human approval. Passing checks does not expand task scope or authority.

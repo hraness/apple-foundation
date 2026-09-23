@@ -5,7 +5,7 @@ edition = "2021"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/hraness/apple-foundation"
-description = "Product-neutral client for Apple's on-device Foundation Models framework: bounded NDJSON bridge, serialized queue, guided JSON output"
+description = "Rust client and Swift bridge for Apple's on-device Foundation Models, with schema-guided JSON output and one request at a time"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

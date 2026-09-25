@@ -5,6 +5,10 @@ on:
   pull_request:
 permissions:
   contents: read
+
+concurrency:
+  group: sdk-checks-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   rust:
     strategy:
@@ -25,3 +29,20 @@ jobs:
         run: cargo +1.85.0 build --all-targets --locked
       - name: Provider-free tests
         run: cargo +1.85.0 test --all-targets --locked
+
+  required:
+    name: Required
+    if: always()
+    needs: [rust]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every selected job
+        env:
+          RUST: ${{ needs.rust.result }}
+        run: |
+          set -euo pipefail
+          if [[ "$RUST" != success ]]; then
+            printf 'Unexpected required job result: %s\n' "$RUST"
+            exit 1
+          fi

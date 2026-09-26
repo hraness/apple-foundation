@@ -1,0 +1,29 @@
+[appleIntelligenceNotEnabled]
+summary: Apple Intelligence is off.
+fix: Turn it on in System Settings › Apple Intelligence & Siri, then try again.
+settings: System Settings › Apple Intelligence & Siri <x-apple.systempreferences:com.apple.Siri-Settings.extension>
+
+[modelNotReady]
+summary: Apple's on-device model is still downloading.
+fix: Try again in a few minutes. System Settings › Apple Intelligence & Siri shows the progress.
+settings: System Settings › Apple Intelligence & Siri <x-apple.systempreferences:com.apple.Siri-Settings.extension>
+temporary: yes
+
+[deviceNotEligible]
+summary: This Mac can't run Apple's on-device model. It needs Apple silicon and Apple Intelligence support.
+fix: Use a different model on this Mac.
+
+[requiresMacOS26]
+summary: Apple's on-device model needs macOS 26 or later.
+fix: Update macOS in System Settings › General › Software Update, then try again.
+settings: System Settings › General › Software Update <x-apple.systempreferences:com.apple.Software-Update-Settings.extension>
+
+[helperMissing]
+summary: The helper that talks to Apple's on-device model isn't installed.
+fix: Install the helper, then try again.
+
+[unavailable]
+summary: Apple's on-device model isn't available right now.
+fix: Check System Settings › Apple Intelligence & Siri, then try again.
+settings: System Settings › Apple Intelligence & Siri <x-apple.systempreferences:com.apple.Siri-Settings.extension>
+

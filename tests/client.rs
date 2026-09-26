@@ -1,7 +1,9 @@
 // The production client intentionally rejects non-macOS platforms before I/O.
 #![cfg(target_os = "macos")]
 
-use apple_foundation::{check, schema_check, Bridge, Error, Options, Request};
+use apple_foundation::{
+    check, platform_check, schema_check, Availability, Bridge, Error, Options, Reason, Request,
+};
 use serde_json::json;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -33,6 +35,90 @@ fn options(timeout_ms: u64, max_pending: usize) -> Options {
 fn check_reports_availability() {
     let a = check(&argv(&[])).unwrap();
     assert!(a.available);
+}
+
+#[test]
+fn check_carries_each_bridge_reason() {
+    for reason in [
+        "deviceNotEligible",
+        "appleIntelligenceNotEnabled",
+        "modelNotReady",
+        "requiresMacOS26",
+        "unavailable",
+    ] {
+        let a = check(&argv(&["--check-reason", reason])).unwrap();
+        assert_eq!(a, Availability::unavailable(Reason::from_wire(reason)));
+        assert_eq!(a.reason.unwrap().as_str(), reason);
+        assert!(a.explain().is_some());
+    }
+}
+
+#[test]
+fn check_without_or_with_unknown_reason_is_unavailable() {
+    let a = check(&argv(&["--check-reason", "-"])).unwrap();
+    assert_eq!(a, Availability::unavailable(Reason::Unavailable));
+    let a = check(&argv(&["--check-reason", "brandNewReason"])).unwrap();
+    assert_eq!(a, Availability::unavailable(Reason::Unavailable));
+}
+
+/// What `check` should say when the bridge can't run at all: the platform
+/// reason on an old or Intel Mac (CI runs macOS 14), otherwise `fallback`.
+fn platform_or(fallback: Reason) -> Availability {
+    match platform_check() {
+        Err(Error::Unavailable(reason)) => Availability::unavailable(reason),
+        _ => Availability::unavailable(fallback),
+    }
+}
+
+#[test]
+fn check_reports_missing_helper_instead_of_a_spawn_error() {
+    let missing = vec!["/nonexistent/apple-foundation/apple-bridge".to_string()];
+    let a = check(&missing).unwrap();
+    assert_eq!(a, platform_or(Reason::HelperMissing));
+}
+
+#[test]
+fn check_explains_a_bridge_that_cannot_start() {
+    match (check(&argv(&["--check-crash"])), platform_check()) {
+        (Ok(a), Err(Error::Unavailable(reason))) => {
+            assert_eq!(a, Availability::unavailable(reason))
+        }
+        (Err(Error::Protocol(message)), Ok(())) => assert!(message.starts_with("check failed")),
+        other => panic!("unexpected: {other:?}"),
+    }
+    match (check(&argv(&["--check-garbage"])), platform_check()) {
+        (Ok(a), Err(Error::Unavailable(reason))) => {
+            assert_eq!(a, Availability::unavailable(reason))
+        }
+        (Err(Error::Protocol(message)), Ok(())) => assert!(message.contains("invalid JSON")),
+        other => panic!("unexpected: {other:?}"),
+    }
+}
+
+#[test]
+fn check_rejects_empty_argv_without_panicking() {
+    assert!(matches!(check(&[]), Err(Error::Protocol(_))));
+}
+
+#[test]
+fn request_time_unavailability_carries_the_reason() {
+    let bridge = Bridge::new(&argv(&["--unavailable", "modelNotReady"])).unwrap();
+    match bridge.request(&Request::text("hello")) {
+        Err(error @ Error::Unavailable(Reason::ModelNotReady)) => {
+            assert_eq!(error.reason(), Some(Reason::ModelNotReady));
+            assert!(error.explain().unwrap().temporary);
+            assert_eq!(
+                error.to_string(),
+                "Apple's on-device model is still downloading"
+            );
+        }
+        other => panic!("expected typed unavailability, got {other:?}"),
+    }
+    let bridge = Bridge::new(&argv(&["--unavailable-bare"])).unwrap();
+    assert!(matches!(
+        bridge.request_no_retry(&Request::text("hello")),
+        Err(Error::Unavailable(Reason::Unavailable))
+    ));
 }
 
 #[test]
@@ -307,4 +393,16 @@ fn oversized_schema_is_rejected_before_any_request_bytes() {
     // The lazy process may have been spawned, but no request was admitted.
     drop(bridge);
     assert!(!fixture.events().iter().any(|event| event == "admit"));
+}
+
+/// Runs only when `APPLE_FOUNDATION_LIVE_BRIDGE` names a real bridge built
+/// with `sh scripts/build-bridge.sh`: the answer must be typed either way.
+#[test]
+fn live_bridge_check_is_typed() {
+    let Some(path) = std::env::var_os("APPLE_FOUNDATION_LIVE_BRIDGE") else {
+        return;
+    };
+    let a = check(&[path.to_string_lossy().into_owned()]).unwrap();
+    assert_eq!(a.available, a.reason.is_none());
+    eprintln!("live bridge: {a:?}");
 }

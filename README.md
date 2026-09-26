@@ -55,6 +55,33 @@ let reply = bridge.request(&Request::text("Summarize this note in one sentence."
 
 Other languages can drive the executable's line protocol directly.
 
+## When the model can't be used
+
+`check` returns `Availability { available, reason }` with a typed `Reason`:
+`AppleIntelligenceNotEnabled`, `ModelNotReady`, `DeviceNotEligible`,
+`RequiresMacOS26`, `HelperMissing` (no bridge at that path), or
+`Unavailable`. These are answers, not errors. A request made while the model
+is unavailable fails with `Error::Unavailable(reason)`.
+
+`reason.explain()` returns the words to show and the System Settings pane that
+fixes it, so every host says the same thing:
+
+```rust
+use apple_foundation::check;
+
+let availability = check(&["/usr/local/bin/apple-bridge".to_string()])?;
+if let Some(help) = availability.explain() {
+    eprintln!("⚠ {}", help.summary);   // Apple Intelligence is off.
+    eprintln!("  {}", help.fix);       // Turn it on in System Settings › Apple Intelligence & Siri, then try again.
+    if let Some(url) = help.settings_url {
+        // x-apple.systempreferences:com.apple.Siri-Settings.extension
+    }
+}
+```
+
+`platform_check()` answers "macOS 26 on Apple silicon?" without starting the
+bridge or a compiler.
+
 ## Requests that must not be replayed automatically
 
 Use `Bridge::request_no_retry` or `request_no_retry_with_timeout` when a lost

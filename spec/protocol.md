@@ -30,7 +30,10 @@ independent; no transcript accumulates between them.
 ```
 
 Reasons: `deviceNotEligible`, `appleIntelligenceNotEnabled`, `modelNotReady`,
-`unavailable`, `requiresMacOS26`.
+`unavailable`, `requiresMacOS26`. The Rust client adds `helperMissing` when
+the bridge executable does not exist, and reports `requiresMacOS26` or
+`deviceNotEligible` itself when a bridge built for macOS 26 on Apple silicon
+cannot start. Clients treat unknown reasons as `unavailable`.
 
 ## Request object
 
@@ -68,7 +71,7 @@ Reasons: `deviceNotEligible`, `appleIntelligenceNotEnabled`, `modelNotReady`,
 
 ```json
 {"id": 7, "ok": true,  "value": <JSON value>}
-{"id": 7, "ok": false, "error": {"code": "modelUnavailable"}}
+{"id": 7, "ok": false, "error": {"code": "modelUnavailable", "reason": "modelNotReady"}}
 ```
 
 Guided responses return the generated value (unwrapped from the internal
@@ -83,6 +86,9 @@ or the parsed JSON value when `expectJson` was set. Output exceeding
 - `invalidRequest` covers malformed JSON, missing/oversized prompt,
   oversized instructions, bad `id`, or out-of-range `maxOutputBytes`.
 - `modelUnavailable` when the system model is not usable at request time.
+  Since 0.2.0 the error also carries `reason`, one of the availability
+  reasons above. Older bridges omit it; clients treat a missing or unknown
+  reason as `unavailable`.
 - `invalidGeneratedOutput` / `invalidGeneratedJSON` /
   `outputBudgetExceeded` / `generationFailed` for generation failures.
 - Unknown argv fails `unknownArguments`; fatal errors go to stderr as
@@ -95,6 +101,12 @@ or the parsed JSON value when `expectJson` was set. Output exceeding
   anyway) with `max_pending` queued callers before `QueueFull`.
 - `request_timeout` per request; a timeout or malformed stream kills the
   process and the next request respawns it.
-- `check(argv)` parses `--check`; `schema_check(argv, schema)` validates a
+- `check(argv)` parses `--check` into `Availability { available, reason }`
+  with a typed `Reason`; every known unavailable state is `Ok`, not an error.
+  `Reason::explain()` returns the plain-language copy and System Settings
+  link hosts show. `platform_check()` answers macOS 26 / Apple silicon
+  without starting anything. Request-time `modelUnavailable` becomes
+  `Error::Unavailable(reason)`.
+- `schema_check(argv, schema)` validates a
   schema without generating; `ensure_bridge(path)` compiles the embedded
   `SWIFT_SOURCE` via `xcrun swiftc` when the binary is absent.

@@ -14,6 +14,8 @@ use crate::{
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Oldest macOS SDK that has `FoundationModels`.
 const MIN_SDK_MAJOR: u32 = 26;
@@ -213,9 +215,12 @@ pub(crate) fn ensure_bridge_with(install: &Path, tools: &dyn Toolchain) -> Resul
         .parent()
         .ok_or_else(|| Error::Protocol("install path has no parent".into()))?;
     std::fs::create_dir_all(dir).map_err(Error::Io)?;
-    let src = std::env::temp_dir().join(format!("apple-bridge-{}.swift", std::process::id()));
+    // Named per call, not per process: two threads building at once must not
+    // share (and delete) each other's source or half-written output.
+    let nonce = build_nonce();
+    let src = std::env::temp_dir().join(format!("apple-bridge-{nonce}.swift"));
     std::fs::write(&src, SWIFT_SOURCE).map_err(Error::Io)?;
-    let tmp_out = dir.join(format!(".apple-bridge-{}.tmp", std::process::id()));
+    let tmp_out = dir.join(format!(".apple-bridge-{nonce}.tmp"));
     let compiled = tools.compile(&src, &tmp_out);
     let _ = std::fs::remove_file(&src);
     let output = compiled.map_err(Error::Spawn)?;
@@ -229,6 +234,16 @@ pub(crate) fn ensure_bridge_with(install: &Path, tools: &dyn Toolchain) -> Resul
     std::fs::rename(&tmp_out, install).map_err(Error::Io)?;
     let _ = std::fs::write(install.with_extension("stamp"), source_stamp());
     Ok(install.to_path_buf())
+}
+
+/// Unique per call: process id, a process-wide counter and the clock.
+pub(crate) fn build_nonce() -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let count = NEXT.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    format!("{}-{count}-{nanos:08x}", std::process::id())
 }
 
 /// Last non-empty lines of compiler output (stderr first, then stdout),
@@ -452,6 +467,86 @@ mod tests {
         assert_eq!(tools.compiled.get(), 1);
         // A current bridge needs no tools at all.
         ensure_bridge_with(&scratch.install(), &FakeTools::default()).unwrap();
+    }
+
+    #[test]
+    fn build_nonces_are_unique_across_threads() {
+        let nonces: Vec<String> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| s.spawn(|| (0..16).map(|_| build_nonce()).collect::<Vec<_>>()))
+                .collect();
+            handles
+                .into_iter()
+                .flat_map(|h| h.join().unwrap())
+                .collect()
+        });
+        let unique: std::collections::HashSet<_> = nonces.iter().collect();
+        assert_eq!(unique.len(), nonces.len());
+    }
+
+    /// Thread-safe fake that holds each build open long enough for two
+    /// builds to overlap, and records the temp paths each one used.
+    #[cfg(target_os = "macos")]
+    #[derive(Default)]
+    struct SlowTools {
+        paths: std::sync::Mutex<Vec<(PathBuf, PathBuf)>>,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl Toolchain for SlowTools {
+        fn developer_dir(&self) -> Option<PathBuf> {
+            Some(PathBuf::from("/Applications/Xcode.app/Contents/Developer"))
+        }
+        fn find_swiftc(&self) -> Option<PathBuf> {
+            Some(PathBuf::from("/fake/swiftc"))
+        }
+        fn sdk_version(&self) -> Option<String> {
+            Some("26.2".into())
+        }
+        fn compile(&self, source: &Path, output: &Path) -> std::io::Result<Output> {
+            self.paths
+                .lock()
+                .unwrap()
+                .push((source.to_path_buf(), output.to_path_buf()));
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            // The other build must not have deleted this build's source.
+            assert!(std::fs::read_to_string(source)?.contains("FoundationModels"));
+            std::fs::write(output, b"#!/bin/sh\n")?;
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            Ok(Output {
+                status: ExitStatus::from_raw(0),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn concurrent_builds_in_one_process_do_not_share_temp_files() {
+        if !platform_ok() {
+            return;
+        }
+        let scratch = Scratch::new("concurrent");
+        let tools = SlowTools::default();
+        let install = scratch.install();
+        std::thread::scope(|s| {
+            let a = s.spawn(|| ensure_bridge_with(&install, &tools));
+            let b = s.spawn(|| ensure_bridge_with(&install, &tools));
+            a.join().unwrap().unwrap();
+            b.join().unwrap().unwrap();
+        });
+        let paths = tools.paths.lock().unwrap();
+        assert_eq!(paths.len(), 2);
+        assert_ne!(paths[0].0, paths[1].0, "shared temp source");
+        assert_ne!(paths[0].1, paths[1].1, "shared temp output");
+        assert!(bridge_is_current(&install));
+        for (source, output) in paths.iter() {
+            assert!(
+                !source.exists() && !output.exists(),
+                "temp file left behind"
+            );
+        }
     }
 
     #[test]

@@ -3,6 +3,8 @@ import FoundationModels
 
 struct BridgeError: Error {
     let code: String
+    /// Availability reason for `modelUnavailable`, e.g. `appleIntelligenceNotEnabled`.
+    var reason: String? = nil
 }
 
 let maxLineBytes = 1048576
@@ -102,7 +104,10 @@ func parseRequest(_ raw: Data) throws -> Request {
 
 @available(macOS 26.0, *)
 func generate(_ request: Request) async throws -> Any {
-    guard availability()["available"] as? Bool == true else { throw BridgeError(code: "modelUnavailable") }
+    let status = availability()
+    guard status["available"] as? Bool == true else {
+        throw BridgeError(code: "modelUnavailable", reason: status["reason"] as? String ?? "unavailable")
+    }
     var guided: DynamicGenerationSchema? = nil
     if let declared = request.schema {
         guided = DynamicGenerationSchema(name: "AppleResult", properties: [.init(name: "value", schema: try schema(declared, name: "AppleValue"))])
@@ -135,8 +140,9 @@ func respond(_ id: Any, _ body: () async throws -> Any) async {
         let value = try await body()
         try? emit(["id": id, "ok": true, "value": value])
     } catch {
-        let code = (error as? BridgeError)?.code ?? "generationFailed"
-        try? emit(["id": id, "ok": false, "error": ["code": code]])
+        var detail: [String: Any] = ["code": (error as? BridgeError)?.code ?? "generationFailed"]
+        if let reason = (error as? BridgeError)?.reason { detail["reason"] = reason }
+        try? emit(["id": id, "ok": false, "error": detail])
     }
 }
 

@@ -8,6 +8,16 @@
 //!
 //! Product-neutral: the host picks the bridge binary, prompts, and schemas.
 
+mod availability;
+mod platform;
+
+pub use availability::{
+    Availability, Explanation, Reason, APPLE_INTELLIGENCE_SETTINGS_PATH,
+    APPLE_INTELLIGENCE_SETTINGS_URL, SOFTWARE_UPDATE_SETTINGS_PATH, SOFTWARE_UPDATE_SETTINGS_URL,
+};
+use platform::os_guard;
+pub use platform::platform_check;
+
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fmt;
@@ -36,11 +46,14 @@ const MAX_OUTPUT_BYTES: usize = 262_144;
 const CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Error {
-    /// Platform cannot run the bridge (not macOS, or bridge reports it).
+    /// Not macOS, so there is no bridge to run.
     Unsupported(String),
-    /// `--check` reports the on-device model is not usable right now.
-    Unavailable(String),
+    /// The on-device model can't be used, for a typed reason: the Mac, macOS,
+    /// Apple Intelligence settings, or model download state. See
+    /// [`Reason::explain`] for the copy a person reads.
+    Unavailable(Reason),
     Spawn(std::io::Error),
     Io(std::io::Error),
     /// The request exceeded its deadline; the bridge was killed and will
@@ -58,7 +71,10 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Unsupported(m) => write!(f, "apple bridge unsupported: {m}"),
-            Self::Unavailable(m) => write!(f, "apple model unavailable: {m}"),
+            Self::Unavailable(reason) => {
+                let summary = reason.explain().summary;
+                write!(f, "{}", summary.trim_end_matches('.'))
+            }
             Self::Spawn(e) => write!(f, "spawn apple bridge: {e}"),
             Self::Io(e) => write!(f, "apple bridge io: {e}"),
             Self::Timeout => write!(f, "apple bridge request timed out"),
@@ -70,6 +86,21 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+impl Error {
+    /// The typed reason when the model or its helper can't be used.
+    pub fn reason(&self) -> Option<Reason> {
+        match self {
+            Self::Unavailable(reason) => Some(*reason),
+            _ => None,
+        }
+    }
+
+    /// Copy for the person when the error has a known fix, else `None`.
+    pub fn explain(&self) -> Option<Explanation> {
+        self.reason().map(Reason::explain)
+    }
+}
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -91,12 +122,6 @@ impl Default for Options {
             max_pending: 64,
         }
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct Availability {
-    pub available: bool,
-    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -156,18 +181,8 @@ struct Conn {
     pending: PendingMap,
 }
 
-fn platform_check() -> Result<()> {
-    if cfg!(target_os = "macos") {
-        Ok(())
-    } else {
-        Err(Error::Unsupported(
-            "Apple Foundation Models requires macOS".into(),
-        ))
-    }
-}
-
 fn spawn_conn(argv: &[String]) -> Result<Conn> {
-    platform_check()?;
+    os_guard()?;
     let mut cmd = Command::new(&argv[0]);
     cmd.args(&argv[1..])
         .stdout(Stdio::piped())
@@ -243,7 +258,7 @@ impl Bridge {
     }
 
     pub fn with_options(argv: &[String], options: Options) -> Result<Self> {
-        platform_check()?;
+        os_guard()?;
         if argv.is_empty()
             || argv.len() > 8
             || argv
@@ -530,12 +545,18 @@ fn finish(id: u64, resp: Value) -> Result<Value> {
         resp.get("error"),
     ) {
         (Some(true), Some(value), _) => Ok(value.clone()),
-        (Some(false), _, Some(err)) => Err(Error::Bridge(
-            err.get("code")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown")
-                .to_string(),
-        )),
+        (Some(false), _, Some(err)) => {
+            let code = err.get("code").and_then(Value::as_str).unwrap_or("unknown");
+            if code == "modelUnavailable" {
+                // Bridges before 0.2.0 send no reason; the code alone still
+                // means "unavailable", not a generation failure.
+                let reason = err.get("reason").and_then(Value::as_str);
+                return Err(Error::Unavailable(
+                    reason.map_or(Reason::Unavailable, Reason::from_wire),
+                ));
+            }
+            Err(Error::Bridge(code.to_string()))
+        }
         _ => Err(Error::Protocol(format!("malformed response for id {id}"))),
     }
 }
@@ -546,7 +567,10 @@ fn run_capture(
     input: &[u8],
     timeout: Duration,
 ) -> Result<(bool, Vec<u8>, Vec<u8>)> {
-    platform_check()?;
+    os_guard()?;
+    if argv.is_empty() {
+        return Err(Error::Protocol("invalid bridge argv".into()));
+    }
     let mut cmd = Command::new(&argv[0]);
     cmd.args(&argv[1..])
         .arg(extra_arg)
@@ -590,10 +614,43 @@ fn run_capture(
     }
 }
 
-/// Run `bridge --check` and parse the availability envelope.
+/// Run `bridge --check` and return whether the model can be used and, if
+/// not, why.
+///
+/// Every known "can't be used" state comes back as `Ok` with a typed
+/// [`Reason`], never as an error: the bridge's own reasons, plus
+/// [`Reason::HelperMissing`] when the executable doesn't exist and the
+/// [`platform_check`] reason when the bridge can't start on this Mac (an Intel
+/// Mac, or macOS before 26). `Err` means the check itself failed: a timeout,
+/// an unexpected spawn error, or off-protocol output.
 pub fn check(argv: &[String]) -> Result<Availability> {
-    let (ok, out, err) = run_capture(argv, "--check", b"", CHECK_TIMEOUT)?;
-    if !ok {
+    let (ok, out, err) = match run_capture(argv, "--check", b"", CHECK_TIMEOUT) {
+        Ok(result) => result,
+        Err(Error::Spawn(error)) => {
+            if let Err(Error::Unavailable(reason)) = platform_check() {
+                return Ok(Availability::unavailable(reason));
+            }
+            if error.kind() == std::io::ErrorKind::NotFound {
+                return Ok(Availability::unavailable(Reason::HelperMissing));
+            }
+            return Err(Error::Spawn(error));
+        }
+        Err(error) => return Err(error),
+    };
+    let envelope = if ok {
+        serde_json::from_slice::<Value>(&out).ok()
+    } else {
+        None
+    };
+    let Some(v) = envelope else {
+        // A bridge built for macOS 26 on Apple silicon dies in the loader on
+        // an older or Intel Mac; say that rather than "protocol violation".
+        if let Err(Error::Unavailable(reason)) = platform_check() {
+            return Ok(Availability::unavailable(reason));
+        }
+        if ok {
+            return Err(Error::Protocol("check printed invalid JSON".into()));
+        }
         let v: Value = serde_json::from_slice(&err).unwrap_or_default();
         return Err(Error::Protocol(format!(
             "check failed: {}",
@@ -601,15 +658,15 @@ pub fn check(argv: &[String]) -> Result<Availability> {
                 .or_else(|| v.get("error"))
                 .unwrap_or(&Value::Null)
         )));
+    };
+    if v.get("available").and_then(Value::as_bool) == Some(true) {
+        return Ok(Availability::ready());
     }
-    let v: Value = serde_json::from_slice(&out).map_err(|e| Error::Protocol(e.to_string()))?;
-    if v.get("reason").and_then(Value::as_str) == Some("requiresMacOS26") {
-        return Err(Error::Unsupported("requires macOS 26".into()));
-    }
-    Ok(Availability {
-        available: v.get("available").and_then(Value::as_bool).unwrap_or(false),
-        reason: v.get("reason").and_then(Value::as_str).map(str::to_string),
-    })
+    let reason = v
+        .get("reason")
+        .and_then(Value::as_str)
+        .map_or(Reason::Unavailable, Reason::from_wire);
+    Ok(Availability::unavailable(reason))
 }
 
 /// Run `bridge --schema-check` against a JSON schema. `Err(Bridge(code))`
@@ -640,7 +697,7 @@ fn source_stamp() -> String {
 /// write to a unique temp file and atomically rename, so concurrent
 /// first-builds race harmlessly to an identical binary.
 pub fn ensure_bridge(install: &Path) -> Result<PathBuf> {
-    platform_check()?;
+    os_guard()?;
     let stamp_path = install.with_extension("stamp");
     let fresh = install.is_file()
         && std::fs::read_to_string(&stamp_path).is_ok_and(|s| s == source_stamp());

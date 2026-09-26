@@ -45,7 +45,7 @@ or `deviceNotEligible` on real machines.
 Rust hosts depend on the crate by immutable tag:
 
 ```toml
-apple-foundation = { git = "https://github.com/hraness/apple-foundation", tag = "v0.1.3" }
+apple-foundation = { git = "https://github.com/hraness/apple-foundation", tag = "v0.2.0" }
 ```
 
 and resolve the bridge binary their own way (installed path, env var, or
@@ -106,6 +106,19 @@ installed."). Hosts that want to warn first call `bridge_is_current(path)` to
 learn whether a build (about ten seconds) will happen, and
 `build_tools_check()` to learn whether macOS would offer to install the tools
 (`Error::ToolsMissing`).
+
+## Upgrading from 0.1
+
+- `Availability.reason` is now `Option<Reason>` instead of a string. Use
+  `reason.as_str()` for the old wire name.
+- `check` returns `Ok` with `RequiresMacOS26` (it used to return
+  `Error::Unsupported`), and `HelperMissing` when the executable is absent.
+- `Error::Unavailable` carries a `Reason`, and a request made while the model
+  is unavailable now fails with it instead of `Error::Bridge("modelUnavailable")`.
+- `Error` is `#[non_exhaustive]` and gains `ToolsMissing` and `BuildFailed`
+  from `ensure_bridge`.
+- Rebuilt bridges answer `--help` and `--version`. The stamp changes, so
+  `ensure_bridge` rebuilds an existing 0.1 bridge once.
 
 ## Requests that must not be replayed automatically
 

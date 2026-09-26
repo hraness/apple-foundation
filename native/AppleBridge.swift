@@ -8,7 +8,7 @@ struct BridgeError: Error {
 }
 
 /// Moves with the crate version; `tests/client.rs` checks they match.
-let bridgeVersion = "0.1.3"
+let bridgeVersion = "0.2.0"
 
 let maxLineBytes = 1048576
 let maxPromptBytes = 32768

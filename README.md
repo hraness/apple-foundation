@@ -104,7 +104,8 @@ missing or stale. It is safe to call without a person watching:
 tools: "Install them with xcode-select --install, then try again. Nothing was
 installed."). Hosts that want to warn first call `bridge_is_current(path)` to
 learn whether a build (about ten seconds) will happen, and
-`build_tools_check()` to learn whether macOS would offer to install the tools.
+`build_tools_check()` to learn whether macOS would offer to install the tools
+(`Error::ToolsMissing`).
 
 ## Requests that must not be replayed automatically
 

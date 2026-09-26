@@ -7,6 +7,7 @@
 //! Compiler output is captured, never inherited: only a short tail reaches
 //! the host, inside [`Error::BuildFailed`].
 
+use crate::platform::os_guard;
 use crate::{
     platform_check, Error, Explanation, Reason, Result, SOFTWARE_UPDATE_SETTINGS_PATH,
     SOFTWARE_UPDATE_SETTINGS_URL, SWIFT_SOURCE,
@@ -168,10 +169,13 @@ impl Toolchain for SystemToolchain {
 
 /// Check that this Mac can build the bridge, without opening the developer
 /// tools install dialog. Returns `Ok(())` when [`crate::ensure_bridge`] would
-/// be able to compile. Hosts call this first to decide whether to warn that
-/// macOS will offer to install the tools.
-pub fn build_tools_check() -> std::result::Result<(), ToolsProblem> {
-    tools_check_with(&SystemToolchain)
+/// find the tools it needs, [`Error::ToolsMissing`] when they are missing or
+/// too old, and [`Error::Unsupported`] off macOS (nothing is run there). Hosts
+/// call this first to decide whether to warn that macOS will offer to install
+/// the tools.
+pub fn build_tools_check() -> Result<()> {
+    os_guard()?;
+    tools_check_with(&SystemToolchain).map_err(Error::ToolsMissing)
 }
 
 pub(crate) fn tools_check_with(tools: &dyn Toolchain) -> std::result::Result<(), ToolsProblem> {
@@ -364,6 +368,12 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn build_tools_check_is_unsupported_off_macos() {
+        assert!(matches!(build_tools_check(), Err(Error::Unsupported(_))));
     }
 
     #[test]

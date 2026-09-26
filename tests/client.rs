@@ -360,11 +360,13 @@ fn no_retry_bounds_stalled_stdin_and_never_resubmits() {
     let bridge = Bridge::new(&fixture.argv(&["--stall-after-prefix"])).unwrap();
     let request = Request::guided("stalled write", json!({"description":"x".repeat(900_000)}));
     let start = std::time::Instant::now();
+    // 1 s, not 200 ms: on a loaded machine the fake bridge can take longer
+    // than 200 ms to start and read its first byte, which left no events.
     assert!(matches!(
-        bridge.request_no_retry_with_timeout(&request, Duration::from_millis(200)),
+        bridge.request_no_retry_with_timeout(&request, Duration::from_secs(1)),
         Err(Error::Timeout)
     ));
-    assert!(start.elapsed() < Duration::from_secs(3));
+    assert!(start.elapsed() < Duration::from_secs(5));
     assert_eq!(fixture.events(), ["spawn", "prefix"]);
 }
 

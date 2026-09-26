@@ -27,9 +27,14 @@ Wire contract: [`spec/protocol.md`](spec/protocol.md).
 
 ```sh
 sh scripts/build-bridge.sh            # builds target/debug/apple-bridge
+target/debug/apple-bridge --help      # modes and requirements
 target/debug/apple-bridge --check     # {"available":true,...} on macOS 26+
-cargo test                            # protocol + client tests (fake bridge)
+cargo build --all-targets && cargo test   # protocol + client tests (fake bridge)
 ```
+
+With a built bridge, `APPLE_FOUNDATION_LIVE_BRIDGE=target/debug/apple-bridge cargo test`
+also checks its help, version and `--check` answer, and
+`APPLE_FOUNDATION_LIVE_BUILD=1 cargo test` runs a real `ensure_bridge` build.
 
 A successful build does not mean the model is available. Run `--check` to see
 live availability; it can report `modelNotReady`, `appleIntelligenceNotEnabled`,
@@ -81,6 +86,25 @@ if let Some(help) = availability.explain() {
 
 `platform_check()` answers "macOS 26 on Apple silicon?" without starting the
 bridge or a compiler.
+
+## Building the bridge from a host
+
+`ensure_bridge(path)` compiles the embedded Swift source when `path` is
+missing or stale. It is safe to call without a person watching:
+
+- It asks `/usr/bin/xcode-select -p` first. When Apple's command line tools
+  are missing, it returns `Error::ToolsMissing` without running `xcrun`, so
+  macOS never opens the "install developer tools" dialog unannounced.
+- It never prints. Compiler output is captured, and a failed build returns
+  `Error::BuildFailed { status, log_tail }` with the last few lines.
+- It refuses to build on a Mac that can't run the bridge (`Error::Unavailable`
+  with `RequiresMacOS26` or `DeviceNotEligible`).
+
+`error.explain()` gives the words and the fix for each case (for missing
+tools: "Install them with xcode-select --install, then try again. Nothing was
+installed."). Hosts that want to warn first call `bridge_is_current(path)` to
+learn whether a build (about ten seconds) will happen, and
+`build_tools_check()` to learn whether macOS would offer to install the tools.
 
 ## Requests that must not be replayed automatically
 

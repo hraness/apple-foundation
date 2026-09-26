@@ -9,12 +9,14 @@
 //! Product-neutral: the host picks the bridge binary, prompts, and schemas.
 
 mod availability;
+mod build;
 mod platform;
 
 pub use availability::{
     Availability, Explanation, Reason, APPLE_INTELLIGENCE_SETTINGS_PATH,
     APPLE_INTELLIGENCE_SETTINGS_URL, SOFTWARE_UPDATE_SETTINGS_PATH, SOFTWARE_UPDATE_SETTINGS_URL,
 };
+pub use build::{bridge_is_current, build_tools_check, ToolsProblem};
 use platform::os_guard;
 pub use platform::platform_check;
 
@@ -54,6 +56,17 @@ pub enum Error {
     /// Apple Intelligence settings, or model download state. See
     /// [`Reason::explain`] for the copy a person reads.
     Unavailable(Reason),
+    /// [`ensure_bridge`] can't compile because developer tools are missing
+    /// or too old. Nothing was started, so no install dialog appeared.
+    ToolsMissing(ToolsProblem),
+    /// The Swift compiler ran and failed. `log_tail` holds the last lines of
+    /// its captured output; nothing was printed to the host's terminal.
+    BuildFailed {
+        /// The compiler's exit status, when it exited normally.
+        status: Option<i32>,
+        /// The last lines of compiler output, at most 2 KiB.
+        log_tail: String,
+    },
     Spawn(std::io::Error),
     Io(std::io::Error),
     /// The request exceeded its deadline; the bridge was killed and will
@@ -75,6 +88,24 @@ impl fmt::Display for Error {
                 let summary = reason.explain().summary;
                 write!(f, "{}", summary.trim_end_matches('.'))
             }
+            Self::ToolsMissing(problem) => write!(f, "{problem}"),
+            Self::BuildFailed { status, log_tail } => {
+                match status {
+                    Some(code) => write!(
+                        f,
+                        "couldn't build the Apple model helper (swiftc exited with status {code})"
+                    )?,
+                    None => write!(
+                        f,
+                        "couldn't build the Apple model helper (swiftc was stopped)"
+                    )?,
+                }
+                // `{:#}` adds the compiler's last lines for logs.
+                if f.alternate() && !log_tail.is_empty() {
+                    write!(f, "\n{log_tail}")?;
+                }
+                Ok(())
+            }
             Self::Spawn(e) => write!(f, "spawn apple bridge: {e}"),
             Self::Io(e) => write!(f, "apple bridge io: {e}"),
             Self::Timeout => write!(f, "apple bridge request timed out"),
@@ -89,16 +120,23 @@ impl std::error::Error for Error {}
 
 impl Error {
     /// The typed reason when the model or its helper can't be used.
+    /// Tools and build failures count as [`Reason::HelperMissing`].
     pub fn reason(&self) -> Option<Reason> {
         match self {
             Self::Unavailable(reason) => Some(*reason),
+            Self::ToolsMissing(_) | Self::BuildFailed { .. } => Some(Reason::HelperMissing),
             _ => None,
         }
     }
 
     /// Copy for the person when the error has a known fix, else `None`.
     pub fn explain(&self) -> Option<Explanation> {
-        self.reason().map(Reason::explain)
+        match self {
+            Self::Unavailable(reason) => Some(reason.explain()),
+            Self::ToolsMissing(problem) => Some(problem.explain()),
+            Self::BuildFailed { .. } => Some(build::build_failed_explanation()),
+            _ => None,
+        }
     }
 }
 
@@ -686,50 +724,26 @@ pub fn schema_check(argv: &[String], schema: &Value) -> Result<()> {
     Err(Error::Bridge(code.to_string()))
 }
 
-/// Stamp written next to a built bridge recording which source it came from.
-/// A version bump or source edit invalidates older installs.
-fn source_stamp() -> String {
-    format!("{}:{}", env!("CARGO_PKG_VERSION"), SWIFT_SOURCE.len())
-}
-
 /// Compile the bridge to `install` if missing or built from different source,
-/// returning its path. Requires macOS with Xcode 26+ (`xcrun swiftc`). Builds
-/// write to a unique temp file and atomically rename, so concurrent
-/// first-builds race harmlessly to an identical binary.
+/// returning its path.
+///
+/// Safe to call unattended: it never opens the "install command line
+/// developer tools" dialog and never prints. In order it:
+///
+/// 1. returns at once when `install` is current ([`bridge_is_current`]);
+/// 2. returns [`Error::Unavailable`] when this Mac can't run the bridge
+///    ([`platform_check`]: macOS 26 on Apple silicon);
+/// 3. returns [`Error::ToolsMissing`] when `xcode-select -p` names no
+///    developer directory, `swiftc` is missing, or the SDK predates macOS 26
+///    ([`build_tools_check`]), without running `xcrun` or `swiftc` first;
+/// 4. compiles with `xcrun swiftc`, capturing its output, and returns
+///    [`Error::BuildFailed`] with the last lines on failure.
+///
+/// Builds write to a unique temp file and atomically rename, so concurrent
+/// first-builds race harmlessly to an identical binary. A build takes about
+/// ten seconds; hosts that want a progress line check [`bridge_is_current`]
+/// first.
 pub fn ensure_bridge(install: &Path) -> Result<PathBuf> {
     os_guard()?;
-    let stamp_path = install.with_extension("stamp");
-    let fresh = install.is_file()
-        && std::fs::read_to_string(&stamp_path).is_ok_and(|s| s == source_stamp());
-    if fresh {
-        return Ok(install.to_path_buf());
-    }
-    let dir = install
-        .parent()
-        .ok_or_else(|| Error::Protocol("install path has no parent".into()))?;
-    std::fs::create_dir_all(dir).map_err(Error::Io)?;
-    let src = std::env::temp_dir().join(format!("apple-bridge-{}.swift", std::process::id()));
-    std::fs::write(&src, SWIFT_SOURCE).map_err(Error::Io)?;
-    let tmp_out = dir.join(format!(".apple-bridge-{}.tmp", std::process::id()));
-    let status = Command::new("xcrun")
-        .args([
-            "swiftc",
-            "-parse-as-library",
-            "-O",
-            "-target",
-            "arm64-apple-macosx26.0",
-        ])
-        .arg(&src)
-        .arg("-o")
-        .arg(&tmp_out)
-        .status()
-        .map_err(Error::Spawn)?;
-    let _ = std::fs::remove_file(&src);
-    if !status.success() {
-        let _ = std::fs::remove_file(&tmp_out);
-        return Err(Error::Unsupported("swiftc failed to build bridge".into()));
-    }
-    std::fs::rename(&tmp_out, install).map_err(Error::Io)?;
-    let _ = std::fs::write(&stamp_path, source_stamp());
-    Ok(install.to_path_buf())
+    build::ensure_bridge_with(install, &build::SystemToolchain)
 }

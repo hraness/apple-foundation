@@ -8,6 +8,11 @@
   in-flight request with bounded pending queue, per-request timeout,
   kill-and-respawn, `--check`/`--schema-check` helpers, `ensure_bridge`
   compiling the embedded `SWIFT_SOURCE`.
+- `src/availability.rs` — typed `Reason`/`Availability` and the plain-language
+  copy (`explain()`) with System Settings links; `tests/golden/` pins it.
+- `src/build.rs` — `ensure_bridge` preflight (`xcode-select -p` before any
+  `xcrun`), captured compiler output, `ToolsProblem`.
+- `src/platform.rs` — `platform_check` (macOS 26 on Apple silicon via sysctl).
 - `spec/protocol.md` — the wire contract (modes, request/response
   envelopes, bounds, error codes). Additive-only.
 - `tests/client.rs` — protocol/client tests against
@@ -31,6 +36,9 @@
   version-free and additive-only.
 - Consumers pin this crate by immutable tag through a Cargo git dependency.
   Bump `Cargo.toml` version and tag `v*` for releases; keep tags immutable.
+- Never let a library path open a system dialog or write to the host's
+  terminal: probe with commands that can't prompt, capture child output,
+  and return typed errors with `explain()` copy.
 - Native checks: `cargo build`, `cargo test`,
   `cargo clippy --all-targets -- -D warnings`, `cargo fmt -- --check`, plus
   `sh scripts/build-bridge.sh` and a `--check` run on Apple Silicon.

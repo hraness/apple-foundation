@@ -212,7 +212,7 @@ impl Availability {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// Renders every reason's copy so a golden file pins each string.

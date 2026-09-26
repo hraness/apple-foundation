@@ -15,6 +15,8 @@ calls a network provider and never falls back to one.
 | `--schema-check` | one JSON schema    | `{"ok":true}` on stdout, or `{"ok":false,"error":{...}}` on stderr with exit 1. |
 | `--once`         | one request object | One response envelope on stdout.                      |
 | *(none)*         | NDJSON requests    | Serve mode: one response line per request line, in order, until EOF. |
+| `--help`, `-h`   | ignored            | Human help on stdout, exit 0. Works on any macOS version. |
+| `--version`, `-V`| ignored            | `<name> <version>` on stdout, exit 0.                  |
 
 Serve mode is the preferred integration: one warm process amortizes model
 startup across many requests, and the in-order line protocol serializes work
@@ -92,7 +94,10 @@ or the parsed JSON value when `expectJson` was set. Output exceeding
 - `invalidGeneratedOutput` / `invalidGeneratedJSON` /
   `outputBudgetExceeded` / `generationFailed` for generation failures.
 - Unknown argv fails `unknownArguments`; fatal errors go to stderr as
-  `{"ok": false, "error": {"code": ...}}` with exit 1.
+  `{"ok": false, "error": {"code": ...}}` with exit 1. When stderr is a
+  terminal, unknown argv instead prints a one-line human error and the help
+  command, and exits 2. In serve mode with a terminal on stdin and stderr,
+  the bridge prints one waiting hint to stderr; stdout stays protocol-only.
 
 ## Client contract (Rust crate)
 
@@ -109,4 +114,8 @@ or the parsed JSON value when `expectJson` was set. Output exceeding
   `Error::Unavailable(reason)`.
 - `schema_check(argv, schema)` validates a
   schema without generating; `ensure_bridge(path)` compiles the embedded
-  `SWIFT_SOURCE` via `xcrun swiftc` when the binary is absent.
+  `SWIFT_SOURCE` via `xcrun swiftc` when the binary is absent or stale. It
+  asks `/usr/bin/xcode-select -p` first and returns `Error::ToolsMissing`
+  without running `xcrun` when the tools are missing, so the install dialog
+  never appears unannounced. Compiler output is captured; a failed build
+  returns `Error::BuildFailed { status, log_tail }`.

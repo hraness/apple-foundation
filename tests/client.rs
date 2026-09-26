@@ -406,3 +406,107 @@ fn live_bridge_check_is_typed() {
     assert_eq!(a.available, a.reason.is_none());
     eprintln!("live bridge: {a:?}");
 }
+
+const HELP_GOLDEN: &str = include_str!("golden/bridge-help.txt");
+
+#[test]
+fn swift_help_text_matches_golden() {
+    // CI can't build the bridge (no macOS 26 SDK), so pin the source too.
+    for line in HELP_GOLDEN.lines().filter(|l| !l.is_empty()) {
+        let swift = line.replace("{name}", "\\(name)");
+        assert!(
+            apple_foundation::SWIFT_SOURCE.contains(&swift),
+            "help line missing from AppleBridge.swift: {line}"
+        );
+        assert!(line.len() <= 80, "help line over 80 columns: {line}");
+    }
+}
+
+#[test]
+fn swift_bridge_version_moves_with_the_crate() {
+    let expected = format!("let bridgeVersion = \"{}\"", env!("CARGO_PKG_VERSION"));
+    assert!(apple_foundation::SWIFT_SOURCE.contains(&expected));
+}
+
+fn live_bridge() -> Option<PathBuf> {
+    std::env::var_os("APPLE_FOUNDATION_LIVE_BRIDGE").map(PathBuf::from)
+}
+
+fn run_live(bridge: &std::path::Path, args: &[&str], env: &[(&str, &str)]) -> std::process::Output {
+    let mut cmd = std::process::Command::new(bridge);
+    cmd.args(args).stdin(std::process::Stdio::null());
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    cmd.output().unwrap()
+}
+
+/// Live CLI checks for a bridge built with `sh scripts/build-bridge.sh`.
+#[test]
+fn live_bridge_help_version_and_errors() {
+    let Some(bridge) = live_bridge() else { return };
+    let name = bridge.file_name().unwrap().to_string_lossy().into_owned();
+    for flag in ["--help", "-h", "help"] {
+        for env in [&[][..], &[("NO_COLOR", "1"), ("TERM", "dumb")][..]] {
+            let out = run_live(&bridge, &[flag], env);
+            assert!(out.status.success(), "{flag} exit {:?}", out.status);
+            assert_eq!(
+                String::from_utf8(out.stdout).unwrap(),
+                HELP_GOLDEN.replace("{name}", &name)
+            );
+            assert!(out.stderr.is_empty());
+        }
+    }
+    for flag in ["--version", "-V"] {
+        let out = run_live(&bridge, &[flag], &[]);
+        assert!(out.status.success());
+        assert_eq!(
+            String::from_utf8(out.stdout).unwrap(),
+            format!("{name} {}\n", env!("CARGO_PKG_VERSION"))
+        );
+    }
+    // Not a terminal: programs keep the JSON error and exit 1.
+    let out = run_live(&bridge, &["--bogus"], &[]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(out.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(out.stderr).unwrap(),
+        "{\"error\":{\"code\":\"unknownArguments\"},\"ok\":false}\n"
+    );
+}
+
+/// `apple-bridge --help | head -1`: a closed pipe ends it quietly.
+#[test]
+fn live_bridge_help_survives_a_closed_pipe() {
+    let Some(bridge) = live_bridge() else { return };
+    let mut child = std::process::Command::new(&bridge)
+        .arg("--help")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Runs only with `APPLE_FOUNDATION_LIVE_BUILD=1`: really compiles the bridge
+/// into a temp directory (about ten seconds, macOS 26 + Xcode 26 only).
+#[test]
+fn live_ensure_bridge_builds_quietly_and_checks() {
+    if std::env::var_os("APPLE_FOUNDATION_LIVE_BUILD").is_none() {
+        return;
+    }
+    let fixture = FixtureDirectory::new();
+    let install = fixture.0.join("bin/apple-bridge");
+    assert!(!apple_foundation::bridge_is_current(&install));
+    apple_foundation::build_tools_check().unwrap();
+    let built = apple_foundation::ensure_bridge(&install).unwrap();
+    assert!(apple_foundation::bridge_is_current(&built));
+    let a = check(&[built.to_string_lossy().into_owned()]).unwrap();
+    eprintln!("live build: {a:?}");
+}

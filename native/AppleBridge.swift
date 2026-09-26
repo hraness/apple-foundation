@@ -7,6 +7,9 @@ struct BridgeError: Error {
     var reason: String? = nil
 }
 
+/// Moves with the crate version; `tests/client.rs` checks they match.
+let bridgeVersion = "0.1.3"
+
 let maxLineBytes = 1048576
 let maxPromptBytes = 32768
 let maxInstructionsBytes = 4096
@@ -171,9 +174,62 @@ func serve() async throws {
     }
 }
 
+/// ASCII symbols for dumb terminals and non-UTF-8 locales (CLI style contract).
+func plainSymbols() -> Bool {
+    let env = ProcessInfo.processInfo.environment
+    if env["HRANESS_ASCII"] == "1" || env["TERM"] == "dumb" { return true }
+    let locale = [env["LC_ALL"], env["LC_CTYPE"], env["LANG"]].compactMap { $0 }.first { !$0.isEmpty } ?? ""
+    return !locale.uppercased().replacingOccurrences(of: "-", with: "").contains("UTF8")
+}
+
+func helpText(_ name: String) -> String {
+    return """
+    \(name) runs Apple's on-device model for another program. It reads JSON
+    requests on stdin and writes one JSON reply per line on stdout.
+
+    Usage: \(name) [--check | --schema-check | --once]
+
+    Modes
+      (none)           Answer JSON requests, one per line, until stdin closes
+      --check          Print whether Apple's model can be used on this Mac
+      --schema-check   Check that the JSON schema on stdin can guide the model
+      --once           Answer the one JSON request on stdin
+
+    Options
+      -h, --help       Show this help
+      -V, --version    Show the version
+
+    Needs macOS 26 or later on Apple silicon, with Apple Intelligence turned on.
+    Protocol: https://github.com/hraness/apple-foundation/blob/main/spec/protocol.md
+
+    """
+}
+
 @main
 struct AppleBridge {
     static func main() async {
+        let name = URL(fileURLWithPath: CommandLine.arguments.first ?? "apple-bridge").lastPathComponent
+        let flags = Array(CommandLine.arguments.dropFirst())
+        // Help and version work on any macOS and never touch the model.
+        if flags == ["-h"] || flags == ["--help"] || flags == ["help"] {
+            FileHandle.standardOutput.write(Data(helpText(name).utf8))
+            return
+        }
+        if flags == ["-V"] || flags == ["--version"] {
+            FileHandle.standardOutput.write(Data("\(name) \(bridgeVersion)\n".utf8))
+            return
+        }
+        let known: Set<[String]> = [[], ["--check"], ["--schema-check"], ["--once"]]
+        if !known.contains(flags) && isatty(STDERR_FILENO) != 0 {
+            // A person typed this; the JSON error below is for programs.
+            let shown = flags.first { !["--check", "--schema-check", "--once"].contains($0) } ?? flags.joined(separator: " ")
+            let (fail, next) = plainSymbols() ? ("FAIL", "->") : ("✗", "→")
+            FileHandle.standardError.write(Data("\(fail) Unknown option \"\(shown)\".\n\(next) \(name) --help\n".utf8))
+            exit(2)
+        }
+        if flags.isEmpty && isatty(STDIN_FILENO) != 0 && isatty(STDERR_FILENO) != 0 {
+            FileHandle.standardError.write(Data("\(name) is waiting for JSON requests, one per line. Press Ctrl-D to stop, or see \(name) --help.\n".utf8))
+        }
         do {
             guard #available(macOS 26.0, *) else {
                 try emit(["available": false, "reason": "requiresMacOS26"])

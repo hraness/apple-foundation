@@ -1,0 +1,19 @@
+[notInstalled]
+summary: Apple's command line tools aren't installed, so the Apple model helper can't be built.
+fix: Install them with xcode-select --install, then try again. Nothing was installed.
+command: xcode-select --install
+
+[noSwiftCompiler]
+summary: Apple's command line tools on this Mac don't include the Swift compiler.
+fix: Reinstall them with xcode-select --install, or install Xcode 26 or later.
+command: xcode-select --install
+
+[sdkTooOld(15.4)]
+summary: The Apple model helper needs the macOS 26 SDK, but the selected tools have macOS 15.4.
+fix: Update Xcode or the command line tools in System Settings › General › Software Update.
+settings: System Settings › General › Software Update <x-apple.systempreferences:com.apple.Software-Update-Settings.extension>
+
+[buildFailed]
+summary: The Apple model helper didn't build.
+fix: Check that Xcode 26 or later is selected (xcode-select -p), then try again.
+

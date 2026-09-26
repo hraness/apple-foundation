@@ -1,0 +1,17 @@
+{name} runs Apple's on-device model for another program. It reads JSON
+requests on stdin and writes one JSON reply per line on stdout.
+
+Usage: {name} [--check | --schema-check | --once]
+
+Modes
+  (none)           Answer JSON requests, one per line, until stdin closes
+  --check          Print whether Apple's model can be used on this Mac
+  --schema-check   Check that the JSON schema on stdin can guide the model
+  --once           Answer the one JSON request on stdin
+
+Options
+  -h, --help       Show this help
+  -V, --version    Show the version
+
+Needs macOS 26 or later on Apple silicon, with Apple Intelligence turned on.
+Protocol: https://github.com/hraness/apple-foundation/blob/main/spec/protocol.md

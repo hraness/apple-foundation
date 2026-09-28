@@ -23,6 +23,16 @@ The project has two parts:
 
 Wire contract: [`spec/protocol.md`](spec/protocol.md).
 
+## Other ways to call the model
+
+| Option | Choose it when |
+| --- | --- |
+| Apple's [`fm` CLI and Python SDK](https://developer.apple.com/videos/play/wwdc2026/334/) | You work in a shell or Python. Apple introduced both at WWDC26; `fm` ships with macOS 27. |
+| [apfel](https://github.com/Arthur-Ficial/apfel) | You want a ready-made CLI, chat, or OpenAI-compatible local server. |
+| apple-foundation | A Rust program, or any program that can start a process and exchange JSON lines, needs one request at a time, schema-guided JSON, and no network calls. |
+
+Checked on 2026-09-28.
+
 ## Build
 
 ```sh
@@ -157,3 +167,5 @@ Foundation Models availability.
 ## License
 
 MIT or Apache-2.0, at your option.
+
+Maintained by [Hraness](https://hraness.com).

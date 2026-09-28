@@ -27,9 +27,9 @@ Wire contract: [`spec/protocol.md`](spec/protocol.md).
 
 | Option | Choose it when |
 | --- | --- |
-| Apple's [`fm` CLI and Python SDK](https://developer.apple.com/videos/play/wwdc2026/334/) | You work in a shell or Python. Apple introduced both at WWDC26; `fm` ships with macOS 27. |
+| Apple's [`fm` CLI and Python SDK](https://developer.apple.com/videos/play/wwdc2026/334/) | You work in a shell or Python. Apple introduced both at WWDC26; `fm` ships with macOS 27 and can also call the larger Private Cloud Compute model. |
 | [apfel](https://github.com/Arthur-Ficial/apfel) | You want a ready-made CLI, chat, or OpenAI-compatible local server. |
-| apple-foundation | A Rust program, or any program that can start a process and exchange JSON lines, needs one request at a time, schema-guided JSON, and no network calls. |
+| apple-foundation | A Rust program, or any program that can start a process and exchange JSON lines, wants schema-guided JSON on macOS 26 or later with no network calls, and one request at a time is enough. |
 
 Checked on 2026-09-28.
 

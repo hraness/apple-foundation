@@ -159,10 +159,13 @@ bytes are written. Response readers stop after at most 4 MiB + 1 bytes without
 waiting for a newline, so a runaway line cannot use unbounded client memory. On
 Unix the bridge's stdin is a socket, so a no-retry write can time out safely.
 
-CI runs formatting, Clippy, build, and tests with Rust 1.85.0 on macOS 14 and
-Ubuntu 24.04. Fake-bridge protocol tests run on macOS without a model. Linux
-checks compilation and the unsupported-platform guards; it does not claim
-Foundation Models availability.
+CI runs Clippy, build, and tests with Rust 1.85.0 on macOS 26 and Ubuntu 24.04,
+and formatting once on Ubuntu. The macOS job also compiles
+`native/AppleBridge.swift` with Xcode 26, runs the built bridge's CLI tests,
+and builds it again through `ensure_bridge`. Fake-bridge protocol tests run
+without a model. Linux checks compilation and the unsupported-platform guards.
+Neither job claims Foundation Models availability: CI machines have no Apple
+Intelligence, so `--check` answers with a typed reason.
 
 ## License
 

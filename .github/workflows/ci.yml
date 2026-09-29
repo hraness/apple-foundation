@@ -6,21 +6,30 @@ on:
 permissions:
   contents: read
 
+# PR runs cancel superseded pushes; main runs group per commit and never cancel.
 concurrency:
-  group: sdk-checks-${{ github.ref }}
-  cancel-in-progress: true
+  group: sdk-checks-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: 10
+  RUST_BACKTRACE: short
+
 jobs:
-  rust:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-14, ubuntu-24.04]
-    runs-on: ${{ matrix.os }}
+  linux:
+    name: rust (ubuntu-24.04)
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.85.0 --profile minimal --component rustfmt --component clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Formatting is platform-independent, so it runs once, here.
       - name: Formatting
         run: cargo +1.85.0 fmt --all -- --check
       - name: Clippy
@@ -30,19 +39,50 @@ jobs:
       - name: Provider-free tests
         run: cargo +1.85.0 test --all-targets --locked
 
+  macos:
+    name: rust + Swift bridge (macos-26)
+    # macOS 26 + Xcode 26 is the only SDK with FoundationModels, so this job
+    # lints the cfg(macos) paths and really compiles native/AppleBridge.swift.
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.85.0 --profile minimal --component clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Clippy
+        run: cargo +1.85.0 clippy --all-targets --locked -- -D warnings
+      - name: Build library and fake bridge
+        run: cargo +1.85.0 build --all-targets --locked
+      - name: Build the Swift bridge
+        run: |
+          set -euo pipefail
+          xcrun --sdk macosx --show-sdk-version
+          sh scripts/build-bridge.sh "$RUNNER_TEMP/apple-bridge/apple-bridge"
+      - name: Tests, including the built bridge and ensure_bridge
+        env:
+          APPLE_FOUNDATION_LIVE_BRIDGE: ${{ runner.temp }}/apple-bridge/apple-bridge
+          APPLE_FOUNDATION_LIVE_BUILD: "1"
+        run: cargo +1.85.0 test --all-targets --locked
+
   required:
     name: Required
     if: always()
-    needs: [rust]
+    needs: [linux, macos]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Require every selected job
         env:
-          RUST: ${{ needs.rust.result }}
+          LINUX: ${{ needs.linux.result }}
+          MACOS: ${{ needs.macos.result }}
         run: |
           set -euo pipefail
-          if [[ "$RUST" != success ]]; then
-            printf 'Unexpected required job result: %s\n' "$RUST"
-            exit 1
-          fi
+          for result in "$LINUX" "$MACOS"; do
+            if [[ "$result" != success ]]; then
+              printf 'Unexpected required job result: %s\n' "$result"
+              exit 1
+            fi
+          done

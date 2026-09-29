@@ -434,7 +434,7 @@ mod tests {
     #[test]
     fn failed_build_keeps_only_a_bounded_tail() {
         if !platform_ok() {
-            return; // CI runs macOS 14; the platform check answers first there.
+            return; // On older or Intel Macs the platform check answers first.
         }
         let scratch = Scratch::new("fails");
         let tools = FakeTools {

@@ -62,7 +62,7 @@ fn check_without_or_with_unknown_reason_is_unavailable() {
 }
 
 /// What `check` should say when the bridge can't run at all: the platform
-/// reason on an old or Intel Mac (CI runs macOS 14), otherwise `fallback`.
+/// reason on an old or Intel Mac, otherwise `fallback`.
 fn platform_or(fallback: Reason) -> Availability {
     match platform_check() {
         Err(Error::Unavailable(reason)) => Availability::unavailable(reason),
@@ -413,7 +413,7 @@ const HELP_GOLDEN: &str = include_str!("golden/bridge-help.txt");
 
 #[test]
 fn swift_help_text_matches_golden() {
-    // CI can't build the bridge (no macOS 26 SDK), so pin the source too.
+    // Linux can't build the bridge, so pin the source too.
     for line in HELP_GOLDEN.lines().filter(|l| !l.is_empty()) {
         let swift = line.replace("{name}", "\\(name)");
         assert!(

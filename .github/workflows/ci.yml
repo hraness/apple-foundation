@@ -2,13 +2,14 @@ name: SDK checks
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
 permissions:
   contents: read
 
 # PR runs cancel superseded pushes; main runs group per commit and never cancel.
 concurrency:
-  group: sdk-checks-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  group: sdk-checks-${{ github.event_name == 'pull_request' && github.ref || format('{0}-{1}', github.ref, github.sha) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -86,3 +87,80 @@ jobs:
               exit 1
             fi
           done
+
+  crates:
+    name: Publish to crates.io
+    needs: required
+    if: startsWith(github.ref, 'refs/tags/v') && vars.CRATES_IO_PUBLISH == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.85.0 --profile minimal
+      - name: Verify publication identity
+        id: identity
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          version=$(python3 - <<'PY'
+          import re
+          import tomllib
+          from pathlib import Path
+          package = tomllib.loads(Path('Cargo.toml').read_text())['package']
+          assert package['name'] == 'apple-foundation'
+          assert re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', package['version'])
+          print(package['version'])
+          PY
+          )
+          test "$GITHUB_REF_NAME" = "v$version"
+          git fetch --no-tags --unshallow origin "refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
+          git merge-base --is-ancestor "$GITHUB_SHA" "origin/$DEFAULT_BRANCH"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+          status=$(curl --silent --show-error --retry 3 --output "$RUNNER_TEMP/crate.json" \
+            --write-out '%{http_code}' "https://crates.io/api/v1/crates/apple-foundation/$version")
+          case "$status" in
+            200) echo 'publish=false' >> "$GITHUB_OUTPUT" ;;
+            404)
+              curl --fail --silent --show-error --retry 3 \
+                'https://crates.io/api/v1/crates/apple-foundation' > "$RUNNER_TEMP/crate-latest.json"
+              python3 - "$version" "$RUNNER_TEMP/crate-latest.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          latest = json.loads(Path(sys.argv[2]).read_text())['crate']['max_stable_version']
+          if latest is not None:
+              assert tuple(map(int, sys.argv[1].split('.'))) > tuple(map(int, latest.split('.'))), 'refusing an older crate version'
+          PY
+              echo 'publish=true' >> "$GITHUB_OUTPUT"
+              ;;
+            *) echo "::error::crates.io version lookup returned HTTP $status"; exit 1 ;;
+          esac
+      - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+        if: steps.identity.outputs.publish == 'true'
+        id: auth
+      - name: Publish the verified crate
+        if: steps.identity.outputs.publish == 'true'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo +1.85.0 publish --locked
+      - name: Verify the registry version
+        env:
+          VERSION: ${{ steps.identity.outputs.version }}
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 10); do
+            if curl --fail --silent --show-error \
+              "https://crates.io/api/v1/crates/apple-foundation/$VERSION" >/dev/null; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::crates.io does not report apple-foundation $VERSION"
+          exit 1

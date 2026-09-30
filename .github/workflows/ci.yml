@@ -39,6 +39,8 @@ jobs:
         run: cargo +1.85.0 build --all-targets --locked
       - name: Provider-free tests
         run: cargo +1.85.0 test --all-targets --locked
+      - name: Registry archive verification tests
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
 
   macos:
     name: rust + Swift bridge (macos-26)
@@ -145,6 +147,21 @@ jobs:
               ;;
             *) echo "::error::crates.io version lookup returned HTTP $status"; exit 1 ;;
           esac
+      - name: Package the expected registry archive
+        id: archive
+        env:
+          VERSION: ${{ steps.identity.outputs.version }}
+        run: |
+          set -euo pipefail
+          cargo +1.85.0 package --locked
+          checksum=$(sha256sum "target/package/apple-foundation-$VERSION.crate" | cut -d' ' -f1)
+          printf 'checksum=%s\n' "$checksum" >> "$GITHUB_OUTPUT"
+      - name: Verify an existing registry archive
+        if: steps.identity.outputs.publish == 'false'
+        env:
+          VERSION: ${{ steps.identity.outputs.version }}
+          CHECKSUM: ${{ steps.archive.outputs.checksum }}
+        run: python3 scripts/verify_crate_registry.py apple-foundation "$VERSION" "$CHECKSUM" "$RUNNER_TEMP/crate.json"
       - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
         if: steps.identity.outputs.publish == 'true'
         id: auth
@@ -156,11 +173,13 @@ jobs:
       - name: Verify the registry version
         env:
           VERSION: ${{ steps.identity.outputs.version }}
+          CHECKSUM: ${{ steps.archive.outputs.checksum }}
         run: |
           set -euo pipefail
           for _ in $(seq 1 10); do
             if curl --fail --silent --show-error \
-              "https://crates.io/api/v1/crates/apple-foundation/$VERSION" >/dev/null; then
+              "https://crates.io/api/v1/crates/apple-foundation/$VERSION" > "$RUNNER_TEMP/published-crate.json"; then
+              python3 scripts/verify_crate_registry.py apple-foundation "$VERSION" "$CHECKSUM" "$RUNNER_TEMP/published-crate.json"
               exit 0
             fi
             sleep 5

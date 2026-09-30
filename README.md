@@ -167,6 +167,10 @@ without a model. Linux checks compilation and the unsupported-platform guards.
 Neither job claims Foundation Models availability: CI machines have no Apple
 Intelligence, so `--check` answers with a typed reason.
 
+After the [one-time registry setup](docs/publishing.md), a version tag also
+publishes the checked crate through GitHub OIDC without a stored token or
+release approval.
+
 ## License
 
 MIT or Apache-2.0, at your option.

@@ -91,6 +91,9 @@ jobs:
   crates:
     name: Publish to crates.io
     needs: required
+    concurrency:
+      group: crates-io-apple-foundation
+      cancel-in-progress: false
     if: startsWith(github.ref, 'refs/tags/v') && vars.CRATES_IO_PUBLISH == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10

@@ -31,8 +31,6 @@ Wire contract: [`spec/protocol.md`](spec/protocol.md).
 | [apfel](https://github.com/Arthur-Ficial/apfel) | You want a ready-made CLI, chat, or OpenAI-compatible local server. |
 | apple-foundation | A Rust program, or any program that can start a process and exchange JSON lines, wants schema-guided JSON on macOS 26 or later with no network calls, and one request at a time is enough. |
 
-Checked on 2026-09-28.
-
 ## Build
 
 ```sh
@@ -113,7 +111,7 @@ missing or stale. It is safe to call without a person watching:
 `error.explain()` gives the words and the fix for each case (for missing
 tools: "Install them with xcode-select --install, then try again. Nothing was
 installed."). Hosts that want to warn first call `bridge_is_current(path)` to
-learn whether a build (about ten seconds) will happen, and
+learn whether a build will happen, and
 `build_tools_check()` to learn whether macOS would offer to install the tools
 (`Error::ToolsMissing`).
 

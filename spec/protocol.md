@@ -103,9 +103,15 @@ or the parsed JSON value when `expectJson` was set. Output exceeding
 
 - `Bridge::new(argv)` / `with_options(argv, Options)` — lazy spawn; requests
   are serialized through one in-flight slot (the on-device model is serial
-  anyway) with `max_pending` queued callers before `QueueFull`.
-- `request_timeout` per request; a timeout or malformed stream kills the
-  process and the next request respawns it.
+  anyway). `max_pending` limits all admitted callers, including the active
+  request; additional callers receive `QueueFull`.
+- `request` and `request_with_timeout` can resubmit after a write error or a
+  disconnected response. Use `request_no_retry` or
+  `request_no_retry_with_timeout` when a lost response must not trigger
+  another submission. Their I/O deadline covers writing and response waiting,
+  but not queue waiting or process spawn. See the [retry contract](../README.md#requests-that-must-not-be-replayed-automatically).
+- A timeout or malformed stream kills the process; the next request
+  respawns it. The retrying methods apply their timeout to the response wait.
 - `check(argv)` parses `--check` into `Availability { available, reason }`
   with a typed `Reason`; every known unavailable state is `Ok`, not an error.
   `Reason::explain()` returns the plain-language copy and System Settings

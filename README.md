@@ -48,6 +48,30 @@ A successful build does not mean the model is available. Run `--check` to see
 live availability; it can report `modelNotReady`, `appleIntelligenceNotEnabled`,
 or `deviceNotEligible` on real machines.
 
+## Generate your first response
+
+After `--check` returns `"available":true`, send a non-sensitive sample request:
+
+```sh
+printf '%s\n' '{"id":1,"prompt":"Write one sentence about a rainy afternoon.","maxOutputBytes":1024}' | target/debug/apple-bridge --once
+```
+
+Success is one JSON line with `"id":1`, `"ok":true`, and the generated text
+in `value`. The wording varies. A failed request returns `"ok":false` with an
+`error.code`; check the envelope rather than treating process startup as success.
+For schema-guided JSON or a persistent process, use the
+[request and response reference](spec/protocol.md#request-object).
+
+If availability is false, resolve the reported reason before submitting:
+
+| Reason | Next step |
+| --- | --- |
+| `appleIntelligenceNotEnabled` | Turn on Apple Intelligence in System Settings > Apple Intelligence & Siri. |
+| `modelNotReady` | Check download progress in the same pane, wait a few minutes, and run `--check` again. |
+| `requiresMacOS26` | Update macOS through System Settings > General > Software Update. |
+| `deviceNotEligible` | Use a supported Apple silicon Mac with Apple Intelligence support. |
+| `unavailable` | Check Apple Intelligence settings and try the availability check again. |
+
 ## Consumers
 
 Rust hosts depend on the crate by immutable tag:
